@@ -1802,7 +1802,27 @@ const MICL = '<svg width="30" height="30" viewBox="0 0 16 16" fill="none" stroke
 const STOPL = '<svg width="26" height="26" viewBox="0 0 16 16"><rect x="3.5" y="3.5" width="9" height="9" rx="1.5" fill="currentColor"/></svg>';
 const FABPLUS = '<svg width="26" height="26" viewBox="0 0 26 26" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M13 5v16M5 13h16"/></svg>';
 let rec = null, recFinal = '', recInterim = '', recTarget = null, recShown = '';
-const recSupported = () => !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+const NDict = () => { const C = window.Capacitor; if (!C || !C.isNativePlatform || !C.isNativePlatform()) return null; try { return C.registerPlugin ? C.registerPlugin('Dictation') : (C.Plugins && C.Plugins.Dictation); } catch (e) { return null; } };
+const recSupported = () => !!(NDict() || window.SpeechRecognition || window.webkitSpeechRecognition);
+/* באפליקציית האנדרואיד: מנוע הדיבור של המכשיר דרך התוסף Dictation */
+async function startNativeRec(D, target){
+  recFinal = ''; recInterim = ''; recShown = ''; recTarget = target || null;
+  const subs = [];
+  const done = () => { subs.forEach(h => { try { h.remove(); } catch (e) {} }); const text = (recFinal + ' ' + recInterim).trim(); rec = null; recShown = ''; render(); if (text) routeCapture(text, recTarget); };
+  try {
+    subs.push(await D.addListener('partial', ({ text }) => { recInterim = text || ''; showLive(); }));
+    subs.push(await D.addListener('final', ({ text }) => { if (text) recFinal = (recFinal + ' ' + text).trim(); recInterim = ''; showLive(); }));
+    subs.push(await D.addListener('error', ({ message }) => {
+      toast(message === 'permission-denied' ? 'צריך לאשר לצלול גישה למיקרופון.' : message === 'network' ? 'ההקלטה צריכה חיבור לאינטרנט.' : message === 'no-hebrew' ? 'מנוע הדיבור בטלפון לא תומך בעברית. אפשר להשתמש במיקרופון של המקלדת.' : 'ההקלטה נעצרה.');
+    }));
+    subs.push(await D.addListener('done', done));
+    rec = { native: true, stop: () => D.stop() }; render();
+    await D.start({ language: 'he-IL' });
+  } catch (e) {
+    subs.forEach(h => { try { h.remove(); } catch (x) {} }); rec = null; render();
+    toast(String(e && e.message || e).includes('permission') ? 'צריך לאשר לצלול גישה למיקרופון.' : 'לא הצלחתי להתחיל הקלטה.');
+  }
+}
 function recPanel(target){
   const on = !!rec;
   const hint = !recSupported() ? 'הדפדפן הזה לא תומך בהקלטה. אפשר להקליד, או להשתמש במיקרופון של המקלדת.'
@@ -1812,6 +1832,8 @@ function recPanel(target){
 }
 function showLive(){ recShown = (recFinal + ' ' + recInterim).trim(); const el = $('#recLive'); if (el) el.textContent = recShown || 'מקשיב… דבר עכשיו'; }
 function startRec(target){
+  const D = NDict();
+  if (D){ if (!backend || !S.loaded) return; startNativeRec(D, target); return; }
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR){ toast('הדפדפן הזה לא תומך בהקלטה. אפשר להשתמש במיקרופון של המקלדת.'); return; }
   if (!backend || !S.loaded) return;
