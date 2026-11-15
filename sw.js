@@ -1,5 +1,5 @@
 // Tzalul service worker: keeps the app working offline.
-const VERSION = 'tzalul-v11';
+const VERSION = 'tzalul-v12';
 const SHELL = ['./', './index.html', './config.js', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
 const CDN = ['www.gstatic.com', 'fonts.googleapis.com', 'fonts.gstatic.com'];
 

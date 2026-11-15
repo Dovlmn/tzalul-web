@@ -642,7 +642,8 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 const pad = n => String(n).padStart(2, '0');
 const ymd = d => d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
-const today = () => ymd(new Date());
+let dayShift = 0; /* לחישוב הפוקוס של הימים הבאים עבור הווידג'ט */
+const today = () => { const d = new Date(); if (dayShift) d.setDate(d.getDate() + dayShift); return ymd(d); };
 const parseD = s => { const [y,m,d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
 const addDays = (s, n) => { const d = parseD(s); d.setDate(d.getDate() + n); return ymd(d); };
 function addInterval(s, unit, n){
@@ -1342,7 +1343,41 @@ function mountEditors(){
 let rq = false;
 let deferRender = false;
 document.addEventListener('focusout', e => { if (deferRender && e.target && (e.target.type === 'date' || e.target.type === 'time')){ deferRender = false; setTimeout(render, 0); } });
+/* ---------- ווידג'ט הפוקוס באנדרואיד ---------- */
+const NWidget = () => { const C = window.Capacitor; if (!C || !C.isNativePlatform || !C.isNativePlatform()) return null; try { return C.registerPlugin ? C.registerPlugin('FocusWidget') : (C.Plugins && C.Plugins.FocusWidget); } catch (e) { return null; } };
+let widgetLast = '', widgetTimer = 0;
+function focusForWidget(){
+  const td = today();
+  const ts = all().filter(t => isFocus(t) && !t.done).sort((a, b) => (a.order || 0) - (b.order || 0));
+  const rec = ts.filter(t => isRec(t));
+  const late = ts.filter(t => !isRec(t) && t.due && t.due < td).sort((a, b) => a.due.localeCompare(b.due));
+  const dueNow = ts.filter(t => !isRec(t) && t.due === td);
+  const doNow = ts.filter(t => !isRec(t) && !(t.due && t.due <= td) && t.start && t.start <= td).sort((a, b) => (a.start + (a.startTime || '99')).localeCompare(b.start + (b.startTime || '99')));
+  const used = new Set([...rec, ...late, ...dueNow, ...doNow].map(t => t.id));
+  const rest = ts.filter(t => !used.has(t.id));
+  const row = (t, mark) => ({ title: t.title || 'ללא כותרת', mark, time: mark === 'do' && t.startTime ? t.startTime : '' });
+  return [...late.map(t => row(t, 'late')), ...dueNow.map(t => row(t, 'due')), ...doNow.map(t => row(t, 'do')), ...rec.map(t => row(t, 'rec')), ...rest.map(t => row(t, 'star'))];
+}
+function syncWidget(){
+  const W = NWidget(); if (!W || !S.loaded) return;
+  clearTimeout(widgetTimer);
+  widgetTimer = setTimeout(() => {
+    const days = {};
+    try { for (let k = 0; k < 8; k++){ dayShift = k; days[today()] = focusForWidget(); } } catch (e) { return; } finally { dayShift = 0; }
+    const json = JSON.stringify(days);
+    if (json === widgetLast) return;
+    widgetLast = json;
+    W.update({ items: json }).catch(() => {});
+  }, 800);
+}
+async function widgetLaunchCheck(){
+  const W = NWidget(); if (!W) return;
+  try { const r = await W.consumeLaunch(); if (r && r.focus && S.view !== 'focus') go('focus'); } catch (e) {}
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { widgetLaunchCheck(); syncWidget(); } });
+setTimeout(widgetLaunchCheck, 300);
 function render(){ if (rq) return; rq = true; requestAnimationFrame(() => { rq = false;
+  syncWidget();
   const ad = document.activeElement; if (ad && (ad.type === 'date' || ad.type === 'time') && ad.closest('.editor,.peditor')){ deferRender = true; return; }
   applyPrefs();
   const ae = document.activeElement; const keepAdd = ae && ae.id === 'addIn' ? ae.value : null;
