@@ -697,14 +697,18 @@ function fsBackend(fs, uid){
   const setRef = root.collection('meta').doc('settings');
   unsubs.push(col.onSnapshot({includeMetadataChanges:true}, snap => {
     const m = new Map(); snap.forEach(d => m.set(d.id, Object.assign({}, d.data(), {id:d.id})));
-    S.items = m; S.loaded = true; S.pending = snap.metadata.hasPendingWrites; render(); renderMode();
+    S.items = m; S.loaded = true; S.pending = snap.metadata.hasPendingWrites; S.fromCache = snap.metadata.fromCache; render(); renderMode();
   }, err => { console.error(err); toast('אין גישה לנתונים. בדוק את כללי האבטחה של Firestore.'); }));
   unsubs.push(setRef.onSnapshot(s => { if (s.exists) S.settings = Object.assign({areas:[]}, s.data()); render(); }, () => {}));
+  const widRef = root.collection('meta').doc('widget');
+  S.widgetRemote = null;
+  unsubs.push(widRef.onSnapshot(s => { S.widgetRemote = s.exists ? (s.data().json || '') : ''; syncWidget(); }, () => {}));
   const w = p => p.catch(onStoreError);
   return {
     put(item){ const body = clean(item); delete body.id; w(col.doc(item.id).set(body)); },
     remove(id){ w(col.doc(id).delete()); },
-    saveSettings(){ w(setRef.set(clean(S.settings))); }
+    saveSettings(){ w(setRef.set(clean(S.settings))); },
+    saveWidget(json){ S.widgetRemote = json; widRef.set({ json, at: Date.now() }).catch(() => {}); }
   };
 }
 function localBackend(){
@@ -773,6 +777,7 @@ async function initBackend(){
       backend = fsBackend(fs, u.uid); S.mode = 'cloud';
     } else {
       S.user = null; backend = null; S.loaded = false; S.mode = 'signedout';
+      try { const W = NWidget(); if (W) { widgetAuthFor = ''; widgetLast = ''; W.setAuth({ uid: '' }).catch(() => {}); } } catch (e) {}
       setAuthMode('in'); $('#auth').hidden = false;
     }
     renderMode(); render();
@@ -1347,7 +1352,9 @@ const NWidget = () => { const C = window.Capacitor; if (!C || !C.isNativePlatfor
 let widgetLast = '', widgetTimer = 0;
 function focusForWidget(){
   const td = today();
-  const ts = all().filter(t => isFocus(t) && !t.done).sort((a, b) => (a.order || 0) - (b.order || 0));
+  const all_ = all().filter(t => isFocus(t)).sort((a, b) => (a.order || 0) - (b.order || 0));
+  const ts = all_.filter(t => !t.done);
+  const doneT = all_.filter(t => t.done).sort((a, b) => (a.completedAt || 0) - (b.completedAt || 0));
   const rec = ts.filter(t => isRec(t));
   const late = ts.filter(t => !isRec(t) && t.due && t.due < td).sort((a, b) => a.due.localeCompare(b.due));
   const dueNow = ts.filter(t => !isRec(t) && t.due === td);
@@ -1355,18 +1362,32 @@ function focusForWidget(){
   const used = new Set([...rec, ...late, ...dueNow, ...doNow].map(t => t.id));
   const rest = ts.filter(t => !used.has(t.id));
   const row = (t, mark) => ({ title: t.title || 'ללא כותרת', mark, time: mark === 'do' && t.startTime ? t.startTime : '' });
-  return [...late.map(t => row(t, 'late')), ...dueNow.map(t => row(t, 'due')), ...doNow.map(t => row(t, 'do')), ...rec.map(t => row(t, 'rec')), ...rest.map(t => row(t, 'star'))];
+  return [...late.map(t => row(t, 'late')), ...dueNow.map(t => row(t, 'due')), ...doNow.map(t => row(t, 'do')), ...rec.map(t => row(t, 'rec')), ...rest.map(t => row(t, 'star')), ...doneT.map(t => row(t, 'done'))];
 }
+/* כל מכשיר שצלול פתוח בו שומר בחשבון את רשימות הפוקוס (meta/widget), והווידג'ט מושך אותן משם גם כשהאפליקציה סגורה. */
+let widgetAuthFor = '';
 function syncWidget(){
-  const W = NWidget(); if (!W || !S.loaded) return;
+  if (!S.loaded) return;
+  const W = NWidget();
+  const cloud = backend && backend.saveWidget;
+  if (!W && !cloud) return;
   clearTimeout(widgetTimer);
   widgetTimer = setTimeout(() => {
     const days = {};
     try { for (let k = 0; k < 8; k++){ dayShift = k; days[today()] = focusForWidget(); } } catch (e) { return; } finally { dayShift = 0; }
     const json = JSON.stringify(days);
-    if (json === widgetLast) return;
-    widgetLast = json;
-    W.update({ items: json }).catch(() => {});
+    // לא כותבים מנתונים ישנים שבמטמון, ולא כותבים אם זה כבר מה ששמור
+    if (cloud && !S.fromCache && S.widgetRemote !== null && json !== S.widgetRemote) backend.saveWidget(json);
+    if (W){
+      if (json !== widgetLast){ widgetLast = json; W.update({ items: json }).catch(() => {}); }
+      try {
+        const u = window.firebase && firebase.auth && firebase.auth().currentUser, cfg = window.TZALUL_FIREBASE;
+        if (u && cfg && u.refreshToken && widgetAuthFor !== u.uid + u.refreshToken){
+          widgetAuthFor = u.uid + u.refreshToken;
+          (W.setAuth ? W.setAuth({ apiKey: cfg.apiKey, projectId: cfg.projectId, uid: u.uid, refreshToken: u.refreshToken }) : Promise.resolve()).catch(() => { widgetAuthFor = ''; });
+        }
+      } catch (e) {}
+    }
   }, 800);
 }
 async function widgetLaunchCheck(){
