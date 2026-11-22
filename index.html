@@ -484,6 +484,8 @@ ul.evs li:only-child .evrow{border-radius:3px}
   .toast{bottom:calc(146px + env(safe-area-inset-bottom,0px))}
   .content{padding-bottom:170px}
   body.editing .tabbar{display:none}
+  .tabbar.reorder .tab{transition:transform .12s}
+  .tab.dragging{background:var(--accent-soft, rgba(72,134,216,.14));color:var(--accent);box-shadow:0 4px 14px rgba(0,0,0,.18);transform:scale(1.08);z-index:2}
   html,body,.content{touch-action:pan-y}
 }
 @media (hover:none) and (pointer:coarse) and (min-width:761px){
@@ -941,10 +943,14 @@ function renderRail(){
   const order = ['inbox', 'calendar', 'notes'].concat(pr.focusPos !== 'bottom' ? ['focus'] : [], ['next', 'recurring'], pr.later || c.later || cur === 'later' ? ['later'] : [], ['scheduled', 'someday'],
     pr.waiting || c.waiting || cur === 'waiting' ? ['waiting'] : [], pr.focusPos === 'bottom' ? ['focus'] : [], ['projects'],
     pr.reference || refs.length || cur === 'reference' || cur === 'ref' ? ['reference'] : [], ['logbook', 'trash']);
+  if (Array.isArray(pr.tabOrder) && pr.tabOrder.length){
+    const pos = v => { const i = pr.tabOrder.indexOf(v); return i < 0 ? 1000 + order.indexOf(v) : i; };
+    order.sort((a, b) => pos(a) - pos(b));
+  }
   S.tabOrder = order;
   const tv = cur === 'project' ? 'projects' : cur === 'ref' ? 'reference' : cur === 'note' ? 'notes' : cur;
   const tab = v => `<button class="tab nav-${v}" data-go="${v}" aria-current="${tv === v}"><span class="ic">${ICONS[v]}</span><span>${short[v] || LISTS[v].label}</span>${v === 'inbox' && c.inbox ? `<span class="bd">${c.inbox}</span>` : ''}</button>`;
-  const bar = $('#tabbar'); bar.innerHTML = order.map(tab).join('');
+  const bar = $('#tabbar'); if (tabDrag) return; bar.innerHTML = order.map(tab).join('');
   if (bar.dataset.v !== tv){ bar.dataset.v = tv; const a = bar.querySelector('[aria-current="true"]'); if (a) a.scrollIntoView({inline:'center', block:'nearest'}); }
 }
 
@@ -1347,6 +1353,57 @@ function mountEditors(){
 let rq = false;
 let deferRender = false;
 document.addEventListener('focusout', e => { if (deferRender && e.target && (e.target.type === 'date' || e.target.type === 'time')){ deferRender = false; setTimeout(render, 0); } });
+
+/* ---------- סידור הסרגל התחתון בגרירה: לחיצה ארוכה על לשונית, ואז גרירה ---------- */
+var tabDrag = null;
+(function(){
+  const bar = document.getElementById('tabbar'); if (!bar) return;
+  let hold = 0, start = null, justDragged = false;
+  const tabs = () => [...bar.querySelectorAll('.tab')];
+  bar.addEventListener('touchstart', e => {
+    const t = e.target.closest('.tab'); if (!t || e.touches.length !== 1) return;
+    const p = e.touches[0]; start = { x: p.clientX, y: p.clientY, tab: t };
+    clearTimeout(hold);
+    hold = setTimeout(() => {
+      tabDrag = { tab: t, lastX: start.x };
+      t.classList.add('dragging'); bar.classList.add('reorder');
+      try { navigator.vibrate && navigator.vibrate(25); } catch (er) {}
+      toast('גרור כדי לסדר את הסרגל');
+    }, 450);
+  }, { passive: true });
+  bar.addEventListener('touchmove', e => {
+    const p = e.touches[0];
+    if (!tabDrag){ if (start && (Math.abs(p.clientX - start.x) > 8 || Math.abs(p.clientY - start.y) > 8)){ clearTimeout(hold); start = null; } return; }
+    e.preventDefault();
+    const x = p.clientX; tabDrag.lastX = x;
+    // גלילה אוטומטית בקצוות
+    const br = bar.getBoundingClientRect();
+    if (x < br.left + 30) bar.scrollLeft -= 12; else if (x > br.right - 30) bar.scrollLeft += 12;
+    const list = tabs(), me = tabDrag.tab;
+    for (const o of list){
+      if (o === me) continue;
+      const r = o.getBoundingClientRect();
+      if (x > r.left && x < r.right){
+        const mid = r.left + r.width / 2, meIdx = list.indexOf(me), oIdx = list.indexOf(o);
+        // הסרגל מימין לשמאל: הסדר ב-DOM הוא מימין לשמאל
+        if (oIdx > meIdx && x < mid) o.after(me);
+        else if (oIdx < meIdx && x > mid) o.before(me);
+        break;
+      }
+    }
+  }, { passive: false });
+  const end = () => {
+    clearTimeout(hold); start = null;
+    if (!tabDrag) return;
+    tabDrag.tab.classList.remove('dragging'); bar.classList.remove('reorder');
+    const order = tabs().map(t => t.dataset.go);
+    tabDrag = null; justDragged = true; setTimeout(() => { justDragged = false; }, 350);
+    setPref('tabOrder', order);
+  };
+  bar.addEventListener('touchend', end); bar.addEventListener('touchcancel', end);
+  bar.addEventListener('contextmenu', e => e.preventDefault());
+  bar.addEventListener('click', e => { if (justDragged){ e.preventDefault(); e.stopPropagation(); } }, true);
+})();
 /* ---------- ווידג'ט הפוקוס באנדרואיד ---------- */
 const NWidget = () => { const C = window.Capacitor; if (!C || !C.isNativePlatform || !C.isNativePlatform()) return null; try { return C.registerPlugin ? C.registerPlugin('FocusWidget') : (C.Plugins && C.Plugins.FocusWidget); } catch (e) { return null; } };
 let widgetLast = '', widgetTimer = 0;
@@ -1392,7 +1449,7 @@ function syncWidget(){
 }
 async function widgetLaunchCheck(){
   const W = NWidget(); if (!W) return;
-  try { const r = await W.consumeLaunch(); if (r && r.focus && S.view !== 'focus') go('focus'); } catch (e) {}
+  try { const r = await W.consumeLaunch(); if (r && r.view && LISTS[r.view] && S.view !== r.view) go(r.view); else if (r && r.focus && S.view !== 'focus') go('focus'); } catch (e) {}
 }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { widgetLaunchCheck(); syncWidget(); } });
 setTimeout(widgetLaunchCheck, 300);
