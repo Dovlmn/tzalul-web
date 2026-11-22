@@ -1361,7 +1361,7 @@ function focusForWidget(){
   const doNow = ts.filter(t => !isRec(t) && !(t.due && t.due <= td) && t.start && t.start <= td).sort((a, b) => (a.start + (a.startTime || '99')).localeCompare(b.start + (b.startTime || '99')));
   const used = new Set([...rec, ...late, ...dueNow, ...doNow].map(t => t.id));
   const rest = ts.filter(t => !used.has(t.id));
-  const row = (t, mark) => ({ title: t.title || 'ללא כותרת', mark, time: mark === 'do' && t.startTime ? t.startTime : '' });
+  const row = (t, mark) => ({ id: t.id, title: t.title || 'ללא כותרת', mark, time: mark === 'do' && t.startTime ? t.startTime : '', rec: !!(t.repeat && t.repeat.unit) });
   return [...late.map(t => row(t, 'late')), ...dueNow.map(t => row(t, 'due')), ...doNow.map(t => row(t, 'do')), ...rec.map(t => row(t, 'rec')), ...rest.map(t => row(t, 'star')), ...doneT.map(t => row(t, 'done'))];
 }
 /* כל מכשיר שצלול פתוח בו שומר בחשבון את רשימות הפוקוס (meta/widget), והווידג'ט מושך אותן משם גם כשהאפליקציה סגורה. */
