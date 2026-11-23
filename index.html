@@ -704,13 +704,13 @@ function fsBackend(fs, uid){
   unsubs.push(setRef.onSnapshot(s => { if (s.exists) S.settings = Object.assign({areas:[]}, s.data()); render(); }, () => {}));
   const widRef = root.collection('meta').doc('widget');
   S.widgetRemote = null;
-  unsubs.push(widRef.onSnapshot(s => { S.widgetRemote = s.exists ? (s.data().json || '') : ''; syncWidget(); }, () => {}));
+  unsubs.push(widRef.onSnapshot(s => { S.widgetRemote = s.exists ? (s.data().json || '') : ''; S.widgetRemoteV = s.exists ? (+s.data().v || 0) : 0; syncWidget(); }, () => {}));
   const w = p => p.catch(onStoreError);
   return {
     put(item){ const body = clean(item); delete body.id; w(col.doc(item.id).set(body)); },
     remove(id){ w(col.doc(id).delete()); },
     saveSettings(){ w(setRef.set(clean(S.settings))); },
-    saveWidget(json){ S.widgetRemote = json; widRef.set({ json, at: Date.now() }).catch(() => {}); }
+    saveWidget(json){ S.widgetRemote = json; widRef.set({ json, at: Date.now(), v: WIDGET_V }).catch(() => {}); }
   };
 }
 function localBackend(){
@@ -1422,7 +1422,8 @@ function focusForWidget(){
   return [...late.map(t => row(t, 'late')), ...dueNow.map(t => row(t, 'due')), ...doNow.map(t => row(t, 'do')), ...rec.map(t => row(t, 'rec')), ...rest.map(t => row(t, 'star')), ...doneT.map(t => row(t, 'done'))];
 }
 /* כל מכשיר שצלול פתוח בו שומר בחשבון את רשימות הפוקוס (meta/widget), והווידג'ט מושך אותן משם גם כשהאפליקציה סגורה. */
-let widgetAuthFor = '';
+let widgetAuthFor = '', widgetWroteAt = 0, widgetRetry = 0;
+const WIDGET_V = 2;
 function syncWidget(){
   if (!S.loaded) return;
   const W = NWidget();
@@ -1434,7 +1435,12 @@ function syncWidget(){
     try { for (let k = 0; k < 8; k++){ dayShift = k; days[today()] = focusForWidget(); } } catch (e) { return; } finally { dayShift = 0; }
     const json = JSON.stringify(days);
     // לא כותבים מנתונים ישנים שבמטמון, ולא כותבים אם זה כבר מה ששמור
-    if (cloud && !S.fromCache && S.widgetRemote !== null && json !== S.widgetRemote) backend.saveWidget(json);
+    // לא דורסים גרסה חדשה יותר של צלול, ולא כותבים יותר מפעם בעשרים שניות (מונע "מלחמה" בין מכשירים)
+    if (cloud && !S.fromCache && S.widgetRemote !== null && json !== S.widgetRemote && (S.widgetRemoteV || 0) <= WIDGET_V){
+      const wait = 20000 - (Date.now() - widgetWroteAt);
+      if (wait <= 0){ widgetWroteAt = Date.now(); backend.saveWidget(json); }
+      else { clearTimeout(widgetRetry); widgetRetry = setTimeout(syncWidget, wait + 50); }
+    }
     if (W){
       if (json !== widgetLast){ widgetLast = json; W.update({ items: json }).catch(() => {}); }
       try {
@@ -2247,7 +2253,24 @@ document.documentElement.setAttribute('dir', 'rtl'); document.documentElement.se
 render();
 initBackend();
 setInterval(() => { const d = today(); if (d !== window.__d){ window.__d = d; render(); } }, 60000); window.__d = today();
-if ('serviceWorker' in navigator && location.protocol !== 'file:') window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+if ('serviceWorker' in navigator && location.protocol !== 'file:') window.addEventListener('load', () => {
+  // גרסה חדשה: בודקים כל חצי שעה ובכל חזרה לאפליקציה, ונטענים מחדש לבד (לא באמצע עריכה)
+  navigator.serviceWorker.register('sw.js').then(reg => {
+    const check = () => reg.update().catch(() => {});
+    setInterval(check, 30 * 60 * 1000);
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') check(); });
+  }).catch(() => {});
+  let had = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!had){ had = true; return; }
+    const reload = () => {
+      const a = document.activeElement;
+      if (document.querySelector('.editor, .peditor, .modal') || (a && a.matches && a.matches('input,textarea,select'))) setTimeout(reload, 5000);
+      else location.reload();
+    };
+    reload();
+  });
+});
 })();
 </script>
 </body>
